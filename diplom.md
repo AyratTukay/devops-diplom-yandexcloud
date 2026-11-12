@@ -1,4 +1,4 @@
-# Дипломный практикум в Yandex.Cloud
+# Дипломный практикум в Yandex.Cloud. Тукаев Айрат.
   * [Цели:](#цели)
   * [Этапы выполнения:](#этапы-выполнения)
      * [Создание облачной инфраструктуры](#создание-облачной-инфраструктуры)
@@ -141,3 +141,336 @@
 6. Ссылка на тестовое приложение и веб интерфейс Grafana с данными доступа.
 7. Все репозитории рекомендуется хранить на одном ресурсе (github, gitlab)
 
+---
+## Выполнение дипломного задания:  
+
+---
+### Создание облачной инфраструктуры
+
+  Для выполнения данного пункта задания в корне папки с дипломной работой создаю две папки **service-bucket** и **infrastructure**.  
+**Service-bucket** будет использоваться для создания сервичного аккаунта и S3 bucket.  
+**Infrastructure** будет использоваться для создания конфигурацию Terrafrom и VPC с подсетями в разных зонах доступности.  
+
+ В папке service-bucket создаю файлы. Структура имеет следующий вид:  
+```
+.
+├── diplom.md
+├── img
+├── infrastructure
+│   └── providers.tf
+└── service-bucket
+    ├── main.tf
+    ├── outputs.tf
+    ├── providers.tf
+    └── variables.tf
+```
+Базовый блок конфигурации Terraform для провайдера Yandex Cloud (**providers.tf**):  
+```
+terraform {
+  required_providers {
+    yandex = {
+      source = "yandex-cloud/yandex"
+      version = "~> 0.243"
+    }
+  }
+  required_version = ">=1.5.0"
+}
+
+provider "yandex" {
+  cloud_id  = var.cloud_id
+  folder_id = var.folder_id
+  zone = var.zone
+}
+```
+Блок переменных Terraform в Яндекс Облаке (**variables.tf**):  
+```
+variable "cloud_id" {
+  type        = string
+  description = "https://cloud.yandex.ru/docs/resource-manager/operations/cloud/get-id"
+}
+
+variable "folder_id" {
+  type        = string
+  description = "https://cloud.yandex.ru/docs/resource-manager/operations/folder/get-id"
+}
+
+variable "zone" {
+  type        = string
+  default     = "ru-central1-a"
+  description = "https://cloud.yandex.ru/docs/overview/concepts/geo-scope"
+}
+
+variable "bucket_name" {
+  type = string
+}
+```
+Блок создания сервисного аккаунта и выдачи ему минимально необходимой роли, создание S3 бакета (**main.tf**):  
+```
+# Сервисный аккаунт для управления инфраструктурой через Terraform
+resource "yandex_iam_service_account" "tf_sa" {
+  name        = "terraform-sa"
+  description = "Service account for Terraform infrastructure management"
+  folder_id   = var.folder_id
+}
+
+# Минимально достаточные права
+locals {
+  sa_roles = [
+    "vpc.admin",
+    "compute.admin",
+    "k8s.admin",
+    "k8s.clusters.agent",
+    "load-balancer.admin",
+    "iam.serviceAccounts.user",
+    "storage.admin"
+  ]
+}
+
+resource "yandex_resourcemanager_folder_iam_member" "tf_sa_roles" {
+  for_each  = toset(local.sa_roles)
+  folder_id = var.folder_id
+  role      = each.key
+  member    = "serviceAccount:${yandex_iam_service_account.tf_sa.id}"
+}
+
+resource "time_sleep" "wait_for_iam" {
+  depends_on      = [yandex_resourcemanager_folder_iam_member.tf_sa_roles]
+  create_duration = "15s"
+}
+
+# Статический ключ доступа для работы с Object Storage (S3)
+resource "yandex_iam_service_account_static_access_key" "tf_sa_static_key" {
+  service_account_id = yandex_iam_service_account.tf_sa.id
+  description        = "Static access key for Terraform S3 backend"
+}
+
+# Авторизованный ключ для самого провайдера Yandex Cloud
+resource "yandex_iam_service_account_key" "tf_sa_auth_key" {
+  service_account_id = yandex_iam_service_account.tf_sa.id
+  description        = "Authorized key for Terraform provider"
+}
+
+# S3 бакет для хранения terraform.tfstate
+resource "yandex_storage_bucket" "tf_state" {
+  access_key = yandex_iam_service_account_static_access_key.tf_sa_static_key.access_key
+  secret_key = yandex_iam_service_account_static_access_key.tf_sa_static_key.secret_key
+  bucket     = var.bucket_name
+
+  # Включаем версионирование для защиты стейт-файла от случайного повреждения
+  versioning {
+    enabled = true
+  }
+
+  # Позволяет удалить бакет при terraform destroy, даже если в нем есть файлы
+  force_destroy = true
+
+  depends_on = [time_sleep.wait_for_iam]
+}
+```
+Нам потребуется сохранить ключи в локальный файл, чтобы основная инфраструктура могла подхватить их без ручного копирования. Пропишу в файле **outputs.tf**.  
+```
+resource "local_file" "sa_key_file" {
+  content = jsonencode({
+    id                 = yandex_iam_service_account_key.tf_sa_auth_key.id
+    service_account_id = yandex_iam_service_account_key.tf_sa_auth_key.service_account_id
+    created_at         = yandex_iam_service_account_key.tf_sa_auth_key.created_at
+    key_algorithm      = yandex_iam_service_account_key.tf_sa_auth_key.key_algorithm
+    public_key         = yandex_iam_service_account_key.tf_sa_auth_key.public_key
+    private_key        = yandex_iam_service_account_key.tf_sa_auth_key.private_key
+  })
+  filename        = "${path.module}/../infrastructure/sa-key.json"
+  file_permission = "0600"
+}
+
+resource "local_file" "backend_config" {
+  content = <<-EOT
+    access_key = "${yandex_iam_service_account_static_access_key.tf_sa_static_key.access_key}"
+    secret_key = "${yandex_iam_service_account_static_access_key.tf_sa_static_key.secret_key}"
+  EOT
+  filename        = "${path.module}/../infrastructure/backend.tfvars"
+  file_permission = "0600"
+}
+
+output "service_account_id" {
+  value = yandex_iam_service_account.tf_sa.id
+}
+```
+Конфигурация первой папки готова можем запустить.  
+```
+export YC_TOKEN=$(yc iam create-token)
+cd service-bucket
+terraform init
+terraform apply -var="cloud_id=b1...." -var="folder_id=b1..." -var="bucket_name=bucket-terraform"
+```
+Необходимые ресурсы созданы:  
+
+  ![Скрин 1](img/img1.png)  
+
+  ![Скрин 2](img/img2.png)  
+
+
+Перехожу в папку **infrastructure** для создания конфигурации Terrafrom для настройки S3-бэкенда и создания сети VPC с тремя подсетями в разных зонах доступности.  
+Пока структура дипломного задания следующая:  
+```
+.
+├── diplom.md
+├── img
+│   ├── img1.png
+│   └── img2.png
+├── infrastructure
+│   ├── backend.tfvars
+│   ├── providers.tf
+│   └── sa-key.json
+└── service-bucket
+    ├── main.tf
+    ├── outputs.tf
+    ├── providers.tf
+    ├── terraform.tfstate
+    ├── terraform.tfstate.backup
+    └── variables.tf
+```
+Как видим конфигурация outputs.tf отработала, созданы файлы с секретами для дальнейшего использования.  
+Создал файл **providers.tf**.  
+```
+terraform {
+  required_providers {
+    yandex = {
+      source = "yandex-cloud/yandex"
+      version = "~> 0.243"
+    }
+  }
+  required_version = ">=1.5.0"
+
+
+backend "s3" {
+    endpoints = {
+      s3 = "https://storage.yandexcloud.net"
+    }
+    bucket = "bucket-terraform"
+    region = "ru-central1"
+    key    = "infra/terraform.tfstate"
+
+    skip_region_validation      = true
+    skip_credentials_validation = true
+    skip_requesting_account_id  = true
+    skip_s3_checksum            = true
+  }
+}
+
+
+provider "yandex" {
+  service_account_key_file = "${path.module}/sa-key.json"
+  cloud_id  = var.cloud_id
+  folder_id = var.folder_id
+  zone = var.zone
+}
+```
+Файл **variables.tf**.  
+```
+variable "cloud_id" {
+  type        = string
+  description = "https://cloud.yandex.ru/docs/resource-manager/operations/cloud/get-id"
+}
+
+variable "folder_id" {
+  type        = string
+  description = "https://cloud.yandex.ru/docs/resource-manager/operations/folder/get-id"
+}
+
+variable "zone" {
+  type        = string
+  default     = "ru-central1-a"
+  description = "https://cloud.yandex.ru/docs/overview/concepts/geo-scope"
+}
+
+variable "bucket_name" {
+  type = string
+}
+
+variable "sa_id" {
+  type        = string
+  description = "ID сервисного аккаунта из вывода bootstrap"
+}
+```
+Файл **network.tf**.  
+```
+resource "yandex_vpc_network" "develop" {
+  name = "develop-network"
+}
+
+resource "yandex_vpc_subnet" "subnet_a" {
+  name           = "develop-subnet-a"
+  zone           = "ru-central1-a"
+  network_id     = yandex_vpc_network.develop.id
+  v4_cidr_blocks = ["10.10.1.0/24"]
+}
+
+resource "yandex_vpc_subnet" "subnet_d" {
+  name           = "develop-subnet-d"
+  zone           = "ru-central1-d"
+  network_id     = yandex_vpc_network.develop.id
+  v4_cidr_blocks = ["10.10.2.0/24"]
+}
+
+resource "yandex_vpc_subnet" "subnet_e" {
+  name           = "develop-subnet-e"
+  zone           = "ru-central1-e"
+  network_id     = yandex_vpc_network.develop.id
+  v4_cidr_blocks = ["10.10.3.0/24"]
+}
+```
+Произвожу инициализацию и запускаю код.  
+```
+terraform init -backend-config=backend.tfvars
+terraform apply -var="cloud_id=b1...." -var="folder_id=b1..." -var="bucket_name=bucket-terraform"
+```
+ 
+  ![Скрин 3](img/img3.png)  
+
+```
+.
+├── diplom.md
+├── img
+│   ├── img1.png
+│   ├── img2.png
+│   └── img3.png
+├── infrastructure
+│   ├── backend.tfvars
+│   ├── network.tf
+│   ├── providers.tf
+│   ├── sa-key.json
+│   └── variables.tf
+└── service-bucket
+    ├── main.tf
+    ├── outputs.tf
+    ├── providers.tf
+    ├── terraform.tfstate
+    ├── terraform.tfstate.backup
+    └── variables.tf
+```
+Также видим что стейт основной конфигурации сохраняется в бакете.  
+
+  ![Скрин 4](img/img4.png)  
+
+
+
+---
+### Создание Kubernetes кластера
+
+На этом этапе необходимо создать [Kubernetes](https://kubernetes.io/ru/docs/concepts/overview/what-is-kubernetes/) кластер на базе предварительно созданной инфраструктуры.   Требуется обеспечить доступ к ресурсам из Интернета.
+
+Это можно сделать двумя способами:
+
+1. Рекомендуемый вариант: самостоятельная установка Kubernetes кластера.  
+   а. При помощи Terraform подготовить как минимум 3 виртуальных машины Compute Cloud для создания Kubernetes-кластера. Тип виртуальной машины следует выбрать самостоятельно с учётом требовании к производительности и стоимости. Если в дальнейшем поймете, что необходимо сменить тип инстанса, используйте Terraform для внесения изменений.  
+   б. Подготовить [ansible](https://www.ansible.com/) конфигурации, можно воспользоваться, например [Kubespray](https://kubernetes.io/docs/setup/production-environment/tools/kubespray/)  
+   в. Задеплоить Kubernetes на подготовленные ранее инстансы, в случае нехватки каких-либо ресурсов вы всегда можете создать их при помощи Terraform.
+2. Альтернативный вариант: воспользуйтесь сервисом [Yandex Managed Service for Kubernetes](https://cloud.yandex.ru/services/managed-kubernetes)  
+  а. С помощью terraform resource для [kubernetes](https://registry.terraform.io/providers/yandex-cloud/yandex/latest/docs/resources/kubernetes_cluster) создать **региональный** мастер kubernetes с размещением нод в разных 3 подсетях      
+  б. С помощью terraform resource для [kubernetes node group](https://registry.terraform.io/providers/yandex-cloud/yandex/latest/docs/resources/kubernetes_node_group)
+  
+Ожидаемый результат:
+
+1. Работоспособный Kubernetes кластер.
+2. В файле `~/.kube/config` находятся данные для доступа к кластеру.
+3. Команда `kubectl get pods --all-namespaces` отрабатывает без ошибок.
