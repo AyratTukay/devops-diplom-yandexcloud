@@ -20,5 +20,11 @@ variable "bucket_name" {
 
 variable "sa_id" {
   type        = string
+  default     = "ajea0i2239efa01dir59"
   description = "ID сервисного аккаунта из вывода bootstrap"
+}
+
+variable "node_zones" {
+  type        = list(string)
+  default     = ["ru-central1-d", "ru-central1-e"]
 }

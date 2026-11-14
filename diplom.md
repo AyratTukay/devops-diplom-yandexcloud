@@ -140,7 +140,10 @@
 5. Репозиторий с конфигурацией Kubernetes кластера.
 6. Ссылка на тестовое приложение и веб интерфейс Grafana с данными доступа.
 7. Все репозитории рекомендуется хранить на одном ресурсе (github, gitlab)
-
+  
+  
+  
+  
 ---
 ## Выполнение дипломного задания:  
 
@@ -456,21 +459,134 @@ terraform apply -var="cloud_id=b1...." -var="folder_id=b1..." -var="bucket_name=
 
 ---
 ### Создание Kubernetes кластера
+При помощи Terraform подготовил 3 виртуальных машины Compute Cloud для создания Kubernetes-кластера. 
+Конфигурация **vms.tf**:  
+```
+data "yandex_compute_image" "ubuntu" {
+  family = "ubuntu-2004-lts"
+}
 
-На этом этапе необходимо создать [Kubernetes](https://kubernetes.io/ru/docs/concepts/overview/what-is-kubernetes/) кластер на базе предварительно созданной инфраструктуры.   Требуется обеспечить доступ к ресурсам из Интернета.
+resource "yandex_compute_instance" "master" {
+  name        = "master"
+  platform_id = "standard-v1"
+  resources {
+    cores         = 2
+    memory        = 2
+    core_fraction = 5
+   }
 
-Это можно сделать двумя способами:
+  boot_disk {
+    initialize_params {
+      image_id = data.yandex_compute_image.ubuntu.image_id
+      type     = "network-hdd"
+      size     = 15
+    }
+  }
 
-1. Рекомендуемый вариант: самостоятельная установка Kubernetes кластера.  
-   а. При помощи Terraform подготовить как минимум 3 виртуальных машины Compute Cloud для создания Kubernetes-кластера. Тип виртуальной машины следует выбрать самостоятельно с учётом требовании к производительности и стоимости. Если в дальнейшем поймете, что необходимо сменить тип инстанса, используйте Terraform для внесения изменений.  
-   б. Подготовить [ansible](https://www.ansible.com/) конфигурации, можно воспользоваться, например [Kubespray](https://kubernetes.io/docs/setup/production-environment/tools/kubespray/)  
-   в. Задеплоить Kubernetes на подготовленные ранее инстансы, в случае нехватки каких-либо ресурсов вы всегда можете создать их при помощи Terraform.
-2. Альтернативный вариант: воспользуйтесь сервисом [Yandex Managed Service for Kubernetes](https://cloud.yandex.ru/services/managed-kubernetes)  
-  а. С помощью terraform resource для [kubernetes](https://registry.terraform.io/providers/yandex-cloud/yandex/latest/docs/resources/kubernetes_cluster) создать **региональный** мастер kubernetes с размещением нод в разных 3 подсетях      
-  б. С помощью terraform resource для [kubernetes node group](https://registry.terraform.io/providers/yandex-cloud/yandex/latest/docs/resources/kubernetes_node_group)
-  
-Ожидаемый результат:
+  metadata = {
+    ssh-keys = "ubuntu:${file("~/.ssh/id_ed25519.pub")}"
+    serial-port-enable = "1"
+  }
 
-1. Работоспособный Kubernetes кластер.
-2. В файле `~/.kube/config` находятся данные для доступа к кластеру.
-3. Команда `kubectl get pods --all-namespaces` отрабатывает без ошибок.
+  network_interface {
+    subnet_id = yandex_vpc_subnet.subnet_a.id
+    nat       = true
+  }
+  scheduling_policy {
+    preemptible = false
+  }
+}
+
+resource "yandex_compute_instance" "node" {
+  name        = "node-${count.index + 1}"
+  count = 2
+  platform_id = "standard-v2"
+  zone = element(var.node_zones, count.index)
+  resources {
+    cores         = 2
+    memory        = 2
+    core_fraction = 5
+   }
+
+  boot_disk {
+    initialize_params {
+      image_id = data.yandex_compute_image.ubuntu.id
+      type     = "network-hdd"
+      size     = 15
+    }
+  }
+
+  metadata = {
+    ssh-keys = "ubuntu:${file("~/.ssh/id_ed25519.pub")}"
+    serial-port-enable = "1"
+  }
+
+  network_interface {
+    subnet_id = element([yandex_vpc_subnet.subnet_d.id, yandex_vpc_subnet.subnet_e.id], count.index)
+    nat       = true
+  }
+  scheduling_policy {
+    preemptible = true
+  }
+}
+```
+  ![Скрин 5](img/img5.png)  
+
+Подготавливаю ansible конфигурацию с помощью kubespray на мастере.  
+```
+sudo apt update -y
+sudo apt install software-properties-common
+sudo add-apt-repository ppa:deadsnakes/ppa
+sudo apt update -y
+sudo apt install git pip python3.9 -y
+
+sudo -i
+curl https://bootstrap.pypa.io/get-pip.py -o get-pip.py
+python3 get-pip.py
+
+# RETURN TO USER
+git clone https://github.com/kubernetes-sigs/kubespray.git
+cd kubespray/
+git checkout release-2.25
+pip3 install -r requirements.txt
+
+# Copy ``inventory/sample`` as ``inventory/mycluster``
+cp -rfp inventory/sample inventory/mycluster
+
+# Update Ansible inventory file with inventory builder
+declare -a IPS=(10.10.1.5 10.10.2.7 10.10.3.33)
+CONFIG_FILE=inventory/mycluster/hosts.yaml python3.10 contrib/inventory_builder/inventory.py ${IPS[@]}
+
+ssh-keygen -t ed25519 -N "" -f ~/.ssh/id_ed25519
+cat ~/.ssh/id_ed25519.pub >> ~/.ssh/authorized_keys
+chmod 600 ~/.ssh/authorized_keys
+
+#в нодах включил вход по паролю для проброски ssh ключа
+sudo passwd ubuntu
+sudo nano /etc/ssh/sshd_config
+sudo grep -rn "PasswordAuthentication" /etc/ssh/sshd_config.d/
+sudo systemctl restart ssh
+
+ssh-copy-id ubuntu@10.10.2.7
+ssh-copy-id ubuntu@10.10.3.33
+
+#в нодах отключил вход по паролю
+
+ansible-playbook -i inventory/mycluster/hosts.yaml cluster.yml -b -v &
+
+mkdir ~/.kube
+sudo cp /etc/kubernetes/admin.conf ~/.kube/config
+sudo chown $(id -u):$(id -g) ~/.kube/config
+```
+  ![Скрин 6](img/img6.png)  
+
+В результате мы получили:  
+1. Работоспособный Kubernetes кластер.  
+2. В файле `~/.kube/config` находятся данные для доступа к кластеру.  
+
+  ![Скрин 7](img/img7.png)  
+
+3. Команда `kubectl get pods --all-namespaces` отрабатывает без ошибок.  
+
+  ![Скрин 8](img/img8.png)  
+
