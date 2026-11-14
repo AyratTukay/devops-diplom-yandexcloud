@@ -470,7 +470,7 @@ resource "yandex_compute_instance" "master" {
   name        = "master"
   platform_id = "standard-v1"
   resources {
-    cores         = 2
+    cores         = 4
     memory        = 2
     core_fraction = 5
    }
@@ -479,7 +479,7 @@ resource "yandex_compute_instance" "master" {
     initialize_params {
       image_id = data.yandex_compute_image.ubuntu.image_id
       type     = "network-hdd"
-      size     = 15
+      size     = 20
     }
   }
 
@@ -544,7 +544,7 @@ sudo -i
 curl https://bootstrap.pypa.io/get-pip.py -o get-pip.py
 python3 get-pip.py
 
-# RETURN TO USER
+# выполняю от пользователя
 git clone https://github.com/kubernetes-sigs/kubespray.git
 cd kubespray/
 git checkout release-2.25
@@ -556,6 +556,8 @@ cp -rfp inventory/sample inventory/mycluster
 # Update Ansible inventory file with inventory builder
 declare -a IPS=(10.10.1.5 10.10.2.7 10.10.3.33)
 CONFIG_FILE=inventory/mycluster/hosts.yaml python3.10 contrib/inventory_builder/inventory.py ${IPS[@]}
+
+# Редактирую файл inventory/mycluster/hosts.yaml
 
 ssh-keygen -t ed25519 -N "" -f ~/.ssh/id_ed25519
 cat ~/.ssh/id_ed25519.pub >> ~/.ssh/authorized_keys
@@ -570,7 +572,7 @@ sudo systemctl restart ssh
 ssh-copy-id ubuntu@10.10.2.7
 ssh-copy-id ubuntu@10.10.3.33
 
-#в нодах отключил вход по паролю
+#в нодах отключил вход по паролю запускаю ansible-playbook
 
 ansible-playbook -i inventory/mycluster/hosts.yaml cluster.yml -b -v &
 
