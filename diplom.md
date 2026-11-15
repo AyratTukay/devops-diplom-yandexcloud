@@ -591,4 +591,84 @@ sudo chown $(id -u):$(id -g) ~/.kube/config
 3. Команда `kubectl get pods --all-namespaces` отрабатывает без ошибок.  
 
   ![Скрин 8](img/img8.png)  
+  
+  
 
+---
+### Создание тестового приложения
+Создаю git репозиторий **test-app** для тестового приложения. Заполняю его следующим содержимым:  
+```
+.
+├── Dockerfile
+├── html
+│   └── index.html
+└── nginx.conf
+```
+Простая html страница (**infex.html**).  
+```
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <title>Test App</title>
+</head>
+<body>
+    <h1>Тестовое приложение дипломной работы</h1>
+    <h1>Тукаев Айрат</h1>
+    <p>Версия: 1.0.0</p>
+</body>
+</html>
+```
+Конфигурация для nginx (**nginx.conf**).  
+```
+server {
+    listen 80;
+    server_name localhost;
+
+    location / {
+        root /usr/share/nginx/html;
+        index index.html;
+    }
+}
+```
+**Dockerfile** для создания образа приложения.  
+```
+FROM nginx:alpine
+COPY nginx.conf /etc/nginx/conf.d/default.conf
+COPY html/ /usr/share/nginx/html/
+EXPOSE 80
+CMD ["nginx", "-g", "daemon off;"]
+```
+Отправляю репозиторий в [GitHub](https://github.com/AyratTukay/test-app).  
+Далее собираю образ и отправляю в [DockerHub](https://hub.docker.com/repository/docker/tukay72/test-app/general).  
+```
+docker login
+docker build -t tukay72/test-app:v1.0.0 .
+docker push tukay72/test-app:v1.0.0
+```
+  ![Скрин 9](img/img9.png)  
+
+  ![Скрин 10](img/img10.png)  
+  
+  
+  
+
+
+---
+### Подготовка cистемы мониторинга и деплой приложения
+
+
+
+
+
+
+
+Уже должны быть готовы конфигурации для автоматического создания облачной инфраструктуры и поднятия Kubernetes кластера.  
+Теперь необходимо подготовить конфигурационные файлы для настройки нашего Kubernetes кластера.
+
+Цель:
+1. Задеплоить в кластер [prometheus](https://prometheus.io/), [grafana](https://grafana.com/), [alertmanager](https://github.com/prometheus/alertmanager), [экспортер](https://github.com/prometheus/node_exporter) основных метрик Kubernetes.
+2. Задеплоить тестовое приложение, например, [nginx](https://www.nginx.com/) сервер отдающий статическую страницу.
+
+Способ выполнения:
+1. Воспользоваться пакетом [kube-prometheus](https://github.com/prometheus-operator/kube-prometheus), который уже включает в себя [Kubernetes оператор](https://operatorhub.io/) для [grafana](https://grafana.com/), [prometheus](https://prometheus.io/), [alertmanager](https://github.com/prometheus/alertmanager) и [node_exporter](https://github.com/prometheus/node_exporter). Альтернативный вариант - использовать набор helm чартов от [bitnami](https://github.com/bitnami/charts/tree/main/bitnami).
