@@ -572,7 +572,7 @@ sudo systemctl restart ssh
 ssh-copy-id ubuntu@10.10.2.7
 ssh-copy-id ubuntu@10.10.3.33
 
-#в нодах отключил вход по паролю запускаю ansible-playbook
+#в нодах отключил вход по паролю, запускаю ansible-playbook
 
 ansible-playbook -i inventory/mycluster/hosts.yaml cluster.yml -b -v &
 
@@ -640,22 +640,138 @@ EXPOSE 80
 CMD ["nginx", "-g", "daemon off;"]
 ```
 Отправляю репозиторий в [GitHub](https://github.com/AyratTukay/test-app).  
-Далее собираю образ и отправляю в [DockerHub](https://hub.docker.com/repository/docker/tukay72/test-app/general).  
+Образ буду загружать в Yandex Container Registry. Создаю реестр в Yandex Cloud.  
 ```
-docker login
-docker build -t tukay72/test-app:v1.0.0 .
-docker push tukay72/test-app:v1.0.0
+yc container registry create --name my-registry --folder-id <b1ga...>
+```
+Авторизирую Docker и загружаю образ: 
+```
+yc container registry configure-docker
+docker tag tukay72/test-app:v1.0.0 cr.yandex/<REGISTRY_ID>/test-app:v1.0.0
+docker push cr.yandex/<REGISTRY_ID>/test-app:v1.0.0
 ```
   ![Скрин 9](img/img9.png)  
 
   ![Скрин 10](img/img10.png)  
-  
-  
-  
+
 
 
 ---
 ### Подготовка cистемы мониторинга и деплой приложения
+Воспользуюсь предложенным пакетом **kube-prometheus**. Проверяю свою версию кубернетес на мастер ноде командой ```kubectl version```. И клонирую свою версию kube-prometheus в домашнюю директорию мастер машины.  
+```
+git clone https://github.com/prometheus-operator/kube-prometheus.git
+cd kube-prometheus
+```
+Установливаю CRD и компоненты мониторинга согласно инструкции на гитхаб.  
+```
+kubectl apply --server-side -f manifests/setup
+kubectl wait \
+	--for condition=Established \
+	--all CustomResourceDefinition \
+	--namespace=monitoring
+kubectl apply -f manifests/
+```
+Проверяю статус запуска подов: 
+```
+kubectl get pods -n monitoring -w
+```
+  ![Скрин 12](img/img12.png)  
+
+Проблема со скачиванием, серверы Yandex Cloud не могут достучаться до серверов авторизации Docker Hub.  
+Создаю конфигурацию зеркала для docker.io.  
+```
+cd ~/kubespray
+ansible all -i inventory/mycluster/hosts.yaml -b -m shell -a 'mkdir -p /etc/containerd/certs.d/docker.io && printf "server = \"https://registry-1.docker.io\"\n\n[host.\"https://cr.yandex\"]\n  capabilities = [\"pull\", \"resolve\"]\n\n[host.\"https://gcr.io\"]\n  capabilities = [\"pull\", \"resolve\"]\n" > /etc/containerd/certs.d/docker.io/hosts.toml && systemctl restart containerd'
+ansible all -i inventory/mycluster/hosts.yaml -b -m shell -a '
+  sed -i "/\[plugins\.\"io\.containerd\.grpc\.v1\.cri\"\.registry\]/a \      config_path = \"/etc/containerd/certs.d\"" /etc/containerd/config.toml
+  systemctl restart containerd
+'
+```
+  ![Скрин 13](img/img13.png)  
+
+  ![Скрин 14](img/img14.png)  
+
+Видим что поды и сервисы запущены. Только grafana имеет формат Cluster IP и недоступен по внешему IP. Поэтому меняю тип сервиса на NodePort. 
+До этого для удобства в работе, скопирую конфиг с мастера на свой ноутбук. Управлять кластером буду оттуда. После копирования меняю IP адрес в конфигурации на внешний.   
+```
+mkdir -p ~/.kube
+scp ubuntu@84.252.129.11:/home/ubuntu/.kube/config ~/.kube/config
+chmod 600 ~/.kube/config
+# сервис на NodePort
+kubectl patch svc grafana -n monitoring --type='json' -p='[
+  {"op": "replace", "path": "/spec/type", "value": "NodePort"},
+  {"op": "add", "path": "/spec/ports/0/nodePort", "value": 30300}
+]'
+```
+   ![Скрин 15](img/img15.png)  
+
+Разверну тестовое приложение. Для этого создаю конфигурацию **app.yaml**.  
+```
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: test-app
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: test-nginx-app
+  namespace: test-app
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: test-nginx-app
+  template:
+    metadata:
+      labels:
+        app: test-nginx-app
+    spec:
+      imagePullSecrets:
+        - name: ycr-secret
+      containers:
+        - name: nginx
+          image: cr.yandex/crpdtjg2rugtfvocd2ft/test-app:v1.0.0
+          ports:
+            - containerPort: 80
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "64Mi"
+            limits:
+              cpu: "100m"
+              memory: "128Mi"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: test-nginx-service
+  namespace: test-app
+spec:
+  type: NodePort
+  selector:
+    app: test-nginx-app
+  ports:
+    - port: 80
+      targetPort: 80
+      nodePort: 30080
+```
+Разворачиваю приложение:
+```
+kubectl apply -f app.yaml
+```
+   ![Скрин 16](img/img16.png)  
+
+   ![Скрин 17](img/img17.png)  
+
+
+
+
+
+
+
+
 
 
 

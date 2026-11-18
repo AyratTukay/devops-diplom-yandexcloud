@@ -14,7 +14,8 @@ locals {
     "k8s.clusters.agent",
     "load-balancer.admin",
     "iam.serviceAccounts.user",
-    "storage.admin"
+    "storage.admin",
+    "container-registry.images.puller"
   ]
 }
 
