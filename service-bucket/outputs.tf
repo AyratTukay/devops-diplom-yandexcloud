@@ -16,6 +16,7 @@ resource "local_file" "backend_config" {
     access_key = "${yandex_iam_service_account_static_access_key.tf_sa_static_key.access_key}"
     secret_key = "${yandex_iam_service_account_static_access_key.tf_sa_static_key.secret_key}"
   EOT
+  sensitive = true
   filename        = "${path.module}/../infrastructure/backend.tfvars"
   file_permission = "0600"
 }

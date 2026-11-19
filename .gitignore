@@ -15,6 +15,7 @@ contrib/offline/offline-files.tar.gz
 *.tfstate
 *.tfstate*backup
 *.tfvars
+*-key.json
 *.lock.hcl
 .terraform/
 contrib/terraform/aws/credentials.tfvars
